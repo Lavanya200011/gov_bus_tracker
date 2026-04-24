@@ -1,7 +1,7 @@
 import { io } from "socket.io-client";
 
 // Ensure this IP matches exactly what you typed in your phone browser
-const URL = "http://192.168.1.103:5000";
+const URL = "https://gov-bus-tracker-backend.onrender.com";
 
 const socket = io(URL, {
   transports: ["websocket"], // Force websocket ONLY
