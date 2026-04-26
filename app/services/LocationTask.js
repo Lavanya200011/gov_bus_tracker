@@ -5,14 +5,20 @@ export const LOCATION_TASK_NAME = "background-location-task";
 
 TaskManager.defineTask(LOCATION_TASK_NAME, ({ data, error }) => {
   if (error) {
-    console.error("Task Error:", error);
+    console.error("Task Error:", error.message);
     return;
   }
-  if (data) {
-    const { locations } = data;
-    const { latitude, longitude, heading } = locations[0].coords;
 
-    // This is the actual data being sent to your server
+  // ⚡ SAFETY CHECK 1: सुनिश्चित करें कि data और locations array सच में मौजूद हैं
+  if (data && data.locations && data.locations.length > 0) {
+    const { latitude, longitude, heading } = data.locations[0].coords;
+
+    // ⚡ SAFETY CHECK 2: अगर बैकग्राउंड में सॉकेट सो गया है, तो उसे जगाएं
+    if (!socket.connected) {
+      socket.connect();
+    }
+
+    // अब सुरक्षित तरीके से डेटा भेजें
     socket.emit("update_location", {
       lat: latitude,
       lng: longitude,
@@ -21,10 +27,9 @@ TaskManager.defineTask(LOCATION_TASK_NAME, ({ data, error }) => {
     });
 
     console.log("📍 Background Update Sent:", latitude, longitude);
+  } else {
+    console.log("⚠️ Background Task ran, but no valid location data found.");
   }
 });
 
-// Add this at the end of LocationTask.js
-export default function LocationTaskDummy() {
-  return null;
-}
+// आप इस Dummy component को हटा सकते हैं, इसकी कोई जरूरत नहीं है।

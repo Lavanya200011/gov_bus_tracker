@@ -1,4 +1,4 @@
-import { useLocalSearchParams } from "expo-router"; // Added for navigation from Buses tab
+import { useLocalSearchParams } from "expo-router";
 import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -13,7 +13,7 @@ import MapView, { Marker, PROVIDER_GOOGLE } from "react-native-maps";
 import socket from "../utils/socket";
 
 export default function ExploreScreen() {
-  const { selectedRoute } = useLocalSearchParams(); // Catch ID from Buses tab
+  const { selectedRoute } = useLocalSearchParams();
   const [busLocation, setBusLocation] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
   const [inputRoute, setInputRoute] = useState("101");
@@ -22,14 +22,11 @@ export default function ExploreScreen() {
 
   const mapRef = useRef(null);
   const timerRef = useRef(null);
-  // ⚡ FIX: Tracking if we have already centered on the current active bus
   const hasSnapped = useRef(false);
 
-  // Handle incoming route from the "Active Buses" tab
   useEffect(() => {
     if (selectedRoute) {
       setInputRoute(selectedRoute as string);
-      // Small delay to ensure component is ready
       setTimeout(() => handleShowBus(), 500);
     }
   }, [selectedRoute]);
@@ -39,7 +36,8 @@ export default function ExploreScreen() {
     socket.on("connect", () => setIsConnected(true));
 
     socket.on("bus_moved", (data) => {
-      if (data.routeId === activeRoute) {
+      // ⚡ SAFETY CHECK 1: Ensure incoming data has valid coordinates
+      if (data && data.routeId === activeRoute && data.lat && data.lng) {
         if (timerRef.current) {
           clearTimeout(timerRef.current);
           timerRef.current = null;
@@ -47,13 +45,12 @@ export default function ExploreScreen() {
         setIsSearching(false);
         setBusLocation(data);
 
-        // ⚡ FIX: Force map to move to the bus if it's the first data point
         if (!hasSnapped.current) {
           mapRef.current?.animateToRegion(
             {
               latitude: data.lat,
               longitude: data.lng,
-              latitudeDelta: 0.05, // Slightly wider zoom for better context
+              latitudeDelta: 0.05,
               longitudeDelta: 0.05,
             },
             1000,
@@ -81,10 +78,8 @@ export default function ExploreScreen() {
 
   const handleShowBus = () => {
     if (!inputRoute.trim()) return Alert.alert("Error", "Enter Route ID");
-
     if (timerRef.current) clearTimeout(timerRef.current);
 
-    // ⚡ RESET: Prepare for a new camera snap
     hasSnapped.current = false;
     setBusLocation(null);
     setActiveRoute(inputRoute);
@@ -94,11 +89,12 @@ export default function ExploreScreen() {
 
     timerRef.current = setTimeout(() => {
       setBusLocation((current) => {
-        if (!current) {
+        // ⚡ SAFETY CHECK 2: Ensure data exists before trying to animate map
+        if (!current || !current.lat || !current.lng) {
           Alert.alert("Bus Not Found", `Route ${inputRoute} is not active.`);
           setIsSearching(false);
+          return null;
         } else {
-          // Fallback snap if location existed but map didn't move
           mapRef.current?.animateToRegion(
             {
               latitude: current.lat,
@@ -132,12 +128,12 @@ export default function ExploreScreen() {
         </TouchableOpacity>
       </View>
 
-      {busLocation ? (
+      {/* ⚡ SAFETY CHECK 3: Only render MapView if coordinates are valid */}
+      {busLocation && busLocation.lat && busLocation.lng ? (
         <MapView
           ref={mapRef}
           style={styles.map}
           provider={PROVIDER_GOOGLE}
-          // Default start to avoid jumping if data is slow
           initialRegion={{
             latitude: busLocation.lat,
             longitude: busLocation.lng,
@@ -171,13 +167,16 @@ export default function ExploreScreen() {
         </View>
       )}
 
-      {busLocation && (
+      {/* ⚡ SAFETY CHECK 4: Ensure UI components don't crash on null properties */}
+      {busLocation && busLocation.routeId && (
         <View style={styles.statusCard}>
           <View style={styles.routeBadge}>
             <Text style={styles.badgeText}>{busLocation.routeId}</Text>
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.cardTitle}>{busLocation.label}</Text>
+            <Text style={styles.cardTitle}>
+              {busLocation.label || "Active Route"}
+            </Text>
             <Text style={styles.cardSub}>Live Location Tracking</Text>
           </View>
         </View>

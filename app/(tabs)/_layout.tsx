@@ -1,6 +1,9 @@
 import { Tabs } from "expo-router";
 import React from "react";
 
+// ⚡ Add this line! Adjust the path if your 'services' folder is somewhere else.
+import "../services/LocationTask";
+
 import { HapticTab } from "@/components/haptic-tab";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { Colors } from "@/constants/theme";
@@ -15,7 +18,6 @@ export default function TabLayout() {
         tabBarActiveTintColor: Colors[colorScheme ?? "light"].tint,
         headerShown: false,
         tabBarButton: HapticTab,
-        // Optional: Style the tab bar to make the icons pop
         tabBarStyle: {
           borderTopWidth: 0,
           elevation: 0,
@@ -44,13 +46,11 @@ export default function TabLayout() {
         }}
       />
 
-      {/* --- UPDATED ACTIVE BUSES TAB --- */}
       <Tabs.Screen
         name="buses"
         options={{
           title: "Active Buses",
           tabBarIcon: ({ color }) => (
-            // Using 'bus.fill' for a solid professional look
             <IconSymbol size={28} name="Bus.double.fill" color={color} />
           ),
         }}
