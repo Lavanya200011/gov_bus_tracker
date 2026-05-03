@@ -1,16 +1,17 @@
 import { BusLocation, isBusLocation } from "@/types/govbus";
+import * as Location from "expo-location";
 import { useLocalSearchParams } from "expo-router";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Linking,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
-import MapView, { Marker } from "react-native-maps";
 
 import socket from "../utils/socket";
 
@@ -24,11 +25,10 @@ export default function ExploreScreen() {
   const [inputRoute, setInputRoute] = useState(DEFAULT_ROUTE);
   const [activeRoute, setActiveRoute] = useState<string | null>(null);
   const [isSearching, setIsSearching] = useState(false);
+  const [locationName, setLocationName] = useState<string | null>(null);
 
-  const mapRef = useRef<MapView | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeRouteRef = useRef<string | null>(null);
-  const hasSnapped = useRef(false);
 
   const clearSearchTimer = useCallback(() => {
     if (timerRef.current) {
@@ -47,9 +47,9 @@ export default function ExploreScreen() {
       }
 
       clearSearchTimer();
-      hasSnapped.current = false;
       activeRouteRef.current = routeId;
       setBusLocation(null);
+      setLocationName(null);
       setActiveRoute(routeId);
       setIsSearching(true);
 
@@ -62,16 +62,6 @@ export default function ExploreScreen() {
             setIsSearching(false);
             return null;
           }
-
-          mapRef.current?.animateToRegion(
-            {
-              latitude: currentLocation.lat,
-              longitude: currentLocation.lng,
-              latitudeDelta: 0.05,
-              longitudeDelta: 0.05,
-            },
-            1000,
-          );
 
           return currentLocation;
         });
@@ -99,19 +89,6 @@ export default function ExploreScreen() {
       clearSearchTimer();
       setIsSearching(false);
       setBusLocation(data);
-
-      if (!hasSnapped.current) {
-        mapRef.current?.animateToRegion(
-          {
-            latitude: data.lat,
-            longitude: data.lng,
-            latitudeDelta: 0.05,
-            longitudeDelta: 0.05,
-          },
-          1000,
-        );
-        hasSnapped.current = true;
-      }
     };
 
     const handleRouteNotActive = (badRouteId: unknown) => {
@@ -122,6 +99,7 @@ export default function ExploreScreen() {
       clearSearchTimer();
       setIsSearching(false);
       setBusLocation(null);
+      setLocationName(null);
       Alert.alert("Bus Not Found", `Route ${badRouteId} is not active.`);
     };
 
@@ -148,6 +126,58 @@ export default function ExploreScreen() {
     handleShowBus(selectedRoute);
   }, [handleShowBus, selectedRoute]);
 
+  useEffect(() => {
+    if (!busLocation) {
+      setLocationName(null);
+      return;
+    }
+
+    let isCancelled = false;
+
+    setLocationName("Finding place...");
+
+    Location.reverseGeocodeAsync({
+      latitude: busLocation.lat,
+      longitude: busLocation.lng,
+    })
+      .then((addresses) => {
+        if (isCancelled) {
+          return;
+        }
+
+        const address = addresses[0];
+        const placeName =
+          address?.city ||
+          address?.district ||
+          address?.subregion ||
+          address?.region ||
+          address?.name ||
+          "Location name unavailable";
+
+        setLocationName(placeName);
+      })
+      .catch(() => {
+        if (!isCancelled) {
+          setLocationName("Location name unavailable");
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [busLocation]);
+
+  const openInMaps = async () => {
+    if (!busLocation) {
+      return;
+    }
+
+    const query = `${busLocation.lat},${busLocation.lng}`;
+    const url = `https://www.google.com/maps/search/?api=1&query=${query}`;
+
+    await Linking.openURL(url);
+  };
+
   return (
     <View style={styles.container}>
       <View style={styles.searchHeader}>
@@ -167,28 +197,26 @@ export default function ExploreScreen() {
       </View>
 
       {busLocation ? (
-        <MapView
-          ref={mapRef}
-          style={styles.map}
-          initialRegion={{
-            latitude: busLocation.lat,
-            longitude: busLocation.lng,
-            latitudeDelta: 0.05,
-            longitudeDelta: 0.05,
-          }}
-        >
-          <Marker
-            coordinate={{
-              latitude: busLocation.lat,
-              longitude: busLocation.lng,
-            }}
-            rotation={busLocation.heading ?? 0}
-            flat
-            anchor={{ x: 0.5, y: 0.5 }}
-          >
-            <Text style={styles.busMarker}>BUS</Text>
-          </Marker>
-        </MapView>
+        <View style={styles.trackingArea}>
+          <View style={styles.locationPanel}>
+            <Text style={styles.panelLabel}>LIVE LOCATION</Text>
+            <Text style={styles.placeText}>
+              {locationName || busLocation.label || "Tracked bus"}
+            </Text>
+            <Text style={styles.coordinateText}>
+              {busLocation.lat.toFixed(6)}
+            </Text>
+            <Text style={styles.coordinateText}>
+              {busLocation.lng.toFixed(6)}
+            </Text>
+            <Text style={styles.headingText}>
+              Heading {Math.round(busLocation.heading ?? 0)} deg
+            </Text>
+            <TouchableOpacity style={styles.mapsButton} onPress={openInMaps}>
+              <Text style={styles.mapsButtonText}>OPEN IN MAPS</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       ) : (
         <View style={styles.loadingArea}>
           <ActivityIndicator size="large" color="#2563eb" />
@@ -222,7 +250,56 @@ export default function ExploreScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#fff" },
-  map: { width: "100%", height: "100%" },
+  trackingArea: {
+    flex: 1,
+    alignItems: "center",
+    backgroundColor: "#eef2ff",
+    justifyContent: "center",
+    padding: 20,
+  },
+  locationPanel: {
+    width: "100%",
+    backgroundColor: "#fff",
+    borderRadius: 20,
+    elevation: 8,
+    padding: 24,
+  },
+  panelLabel: {
+    color: "#9ca3af",
+    fontSize: 10,
+    fontWeight: "900",
+    marginBottom: 16,
+    textAlign: "center",
+  },
+  placeText: {
+    color: "#111827",
+    fontSize: 24,
+    fontWeight: "900",
+    marginBottom: 18,
+    textAlign: "center",
+  },
+  coordinateText: {
+    color: "#1f2937",
+    fontSize: 28,
+    fontWeight: "900",
+    marginBottom: 8,
+    textAlign: "center",
+  },
+  headingText: {
+    color: "#4b5563",
+    fontSize: 14,
+    fontWeight: "700",
+    marginTop: 8,
+    textAlign: "center",
+  },
+  mapsButton: {
+    alignItems: "center",
+    backgroundColor: "#2563eb",
+    borderRadius: 14,
+    marginTop: 22,
+    padding: 14,
+  },
+  mapsButtonText: { color: "#fff", fontSize: 12, fontWeight: "900" },
   searchHeader: {
     position: "absolute",
     top: 50,
@@ -250,16 +327,6 @@ const styles = StyleSheet.create({
   loadingArea: { flex: 1, justifyContent: "center", alignItems: "center" },
   loadingText: { marginTop: 20, fontWeight: "900", color: "#374151" },
   subText: { color: "#9ca3af", fontSize: 10, marginTop: 5, fontWeight: "bold" },
-  busMarker: {
-    backgroundColor: "#2563eb",
-    borderRadius: 12,
-    color: "#fff",
-    fontSize: 12,
-    fontWeight: "900",
-    overflow: "hidden",
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-  },
   statusCard: {
     position: "absolute",
     bottom: 40,

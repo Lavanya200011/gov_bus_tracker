@@ -3,7 +3,7 @@ import { io } from "socket.io-client";
 
 import { type BusRoute, isBusRoute } from "@/types/govbus";
 
-const DEFAULT_SOCKET_URL = "https://https://gov-bus-backend.onrender.com";
+const DEFAULT_SOCKET_URL = "https://gov-bus-backend.onrender.com";
 const CURRENT_BUS_STORAGE_KEY = "govbus.currentBus";
 const socketUrl = process.env.EXPO_PUBLIC_SOCKET_URL || DEFAULT_SOCKET_URL;
 
