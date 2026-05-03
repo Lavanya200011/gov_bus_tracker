@@ -1,5 +1,6 @@
+import { BusRoute, isBusRoute } from "@/types/govbus";
 import { useRouter } from "expo-router";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -10,57 +11,64 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+
 import socket from "../utils/socket";
 
-interface Bus {
-  routeId: string;
-  label: string;
-  isLive: boolean;
-}
-
 export default function BusesScreen() {
-  const [allRoutes, setAllRoutes] = useState<Bus[]>([]); // Now includes both live and offline
+  const [allRoutes, setAllRoutes] = useState<BusRoute[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const router = useRouter();
 
   useEffect(() => {
-    if (!socket.connected) socket.connect();
+    if (!socket.connected) {
+      socket.connect();
+    }
 
-    // Initial fetch
     socket.emit("request_bus_list");
 
-    // Listen for the combined DB + Live list
-    socket.on("active_buses_list", (data) => {
-      setAllRoutes(data);
+    const handleBusList = (data: unknown) => {
+      const routes = Array.isArray(data) ? data.filter(isBusRoute) : [];
+      setAllRoutes(routes);
       setLoading(false);
-    });
+    };
 
-    // Listen for real-time bus status changes
-    socket.on("bus_online", (busData) => {
-      setAllRoutes((prevRoutes) =>
-        prevRoutes.map((bus) =>
+    const handleBusOnline = (busData: unknown) => {
+      if (!isBusRoute(busData)) {
+        return;
+      }
+
+      setAllRoutes((previousRoutes) =>
+        previousRoutes.map((bus) =>
           bus.routeId === busData.routeId ? { ...bus, isLive: true } : bus,
         ),
       );
-    });
+    };
 
-    socket.on("bus_offline", (busData) => {
-      setAllRoutes((prevRoutes) =>
-        prevRoutes.map((bus) =>
+    const handleBusOffline = (busData: unknown) => {
+      if (!isBusRoute(busData)) {
+        return;
+      }
+
+      setAllRoutes((previousRoutes) =>
+        previousRoutes.map((bus) =>
           bus.routeId === busData.routeId ? { ...bus, isLive: false } : bus,
         ),
       );
-    });
+    };
+
+    socket.on("active_buses_list", handleBusList);
+    socket.on("bus_online", handleBusOnline);
+    socket.on("bus_offline", handleBusOffline);
 
     return () => {
-      socket.off("active_buses_list");
-      socket.off("bus_online");
-      socket.off("bus_offline");
+      socket.off("active_buses_list", handleBusList);
+      socket.off("bus_online", handleBusOnline);
+      socket.off("bus_offline", handleBusOffline);
     };
   }, []);
 
-  const handleSelectBus = (bus: Bus) => {
+  const handleSelectBus = (bus: BusRoute) => {
     if (!bus.isLive) {
       Alert.alert(
         "Offline",
@@ -68,19 +76,27 @@ export default function BusesScreen() {
       );
       return;
     }
+
     router.push({
       pathname: "/explore",
       params: { selectedRoute: bus.routeId },
     });
   };
 
-  const filteredRoutes = allRoutes.filter((bus) => {
-    const query = searchQuery.toLowerCase();
-    return (
-      bus.label.toLowerCase().includes(query) ||
-      bus.routeId.toString().includes(query)
-    );
-  });
+  const filteredRoutes = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+
+    if (!query) {
+      return allRoutes;
+    }
+
+    return allRoutes.filter((bus) => {
+      return (
+        bus.label.toLowerCase().includes(query) ||
+        bus.routeId.toLowerCase().includes(query)
+      );
+    });
+  }, [allRoutes, searchQuery]);
 
   return (
     <View style={styles.container}>
@@ -91,7 +107,7 @@ export default function BusesScreen() {
           <ActivityIndicator
             size="large"
             color="#2563eb"
-            style={{ marginTop: 50 }}
+            style={styles.loader}
           />
         ) : (
           <FlatList
@@ -107,20 +123,20 @@ export default function BusesScreen() {
                 >
                   <Text style={styles.badgeText}>{item.routeId}</Text>
                 </View>
-                <View style={{ flex: 1 }}>
+                <View style={styles.busInfo}>
                   <Text style={styles.label}>{item.label}</Text>
                   <Text
                     style={
                       item.isLive ? styles.liveStatus : styles.offlineStatus
                     }
                   >
-                    {item.isLive ? "ðŸŸ¢ LIVE NOW" : "âšª OFFLINE"}
+                    {item.isLive ? "LIVE NOW" : "OFFLINE"}
                   </Text>
                 </View>
               </TouchableOpacity>
             )}
             ListEmptyComponent={
-              <Text style={styles.empty}>No routes found in database.</Text>
+              <Text style={styles.empty}>No routes found.</Text>
             }
           />
         )}
@@ -132,6 +148,8 @@ export default function BusesScreen() {
           placeholder="Search routes..."
           value={searchQuery}
           onChangeText={setSearchQuery}
+          autoCapitalize="none"
+          autoCorrect={false}
         />
       </View>
     </View>
@@ -148,10 +166,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
   },
   listContainer: { flex: 1, paddingHorizontal: 20 },
+  loader: { marginTop: 50 },
   busCard: {
     backgroundColor: "#fff",
     padding: 15,
-    borderRadius: 20,
+    borderRadius: 16,
     marginBottom: 12,
     flexDirection: "row",
     alignItems: "center",
@@ -169,6 +188,7 @@ const styles = StyleSheet.create({
   },
   offlineBadge: { backgroundColor: "#9ca3af" },
   badgeText: { color: "#fff", fontWeight: "bold", fontSize: 18 },
+  busInfo: { flex: 1 },
   label: { fontSize: 16, fontWeight: "bold", color: "#374151" },
   liveStatus: {
     fontSize: 10,
@@ -187,7 +207,7 @@ const styles = StyleSheet.create({
     margin: 20,
     paddingHorizontal: 15,
     paddingVertical: 12,
-    borderRadius: 20,
+    borderRadius: 18,
     elevation: 10,
   },
   searchInput: { fontSize: 16, fontWeight: "600", color: "#1f2937" },

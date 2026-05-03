@@ -1,6 +1,6 @@
 import { Picker } from "@react-native-picker/picker";
 import * as Location from "expo-location";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -9,75 +9,128 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+
 import { LOCATION_TASK_NAME } from "../services/LocationTask";
-import socket from "../utils/socket";
+import socket, {
+  clearCurrentBusRegistration,
+  setCurrentBusRegistration,
+} from "../utils/socket";
+import { BusRoute, isBusRoute } from "@/types/govbus";
+
+const DURATIONS_IN_MINUTES = [5, 60, 90, 120];
 
 export default function HomeScreen() {
   const [isTracking, setIsTracking] = useState(false);
-  const [availableRoutes, setAvailableRoutes] = useState([]);
-  const [selectedRoute, setSelectedRoute] = useState(null);
+  const [availableRoutes, setAvailableRoutes] = useState<BusRoute[]>([]);
+  const [selectedRoute, setSelectedRoute] = useState<BusRoute | null>(null);
   const [loading, setLoading] = useState(true);
+  const [duration, setDuration] = useState(60);
+  const [timeLeft, setTimeLeft] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // --- TIMER STATES ---
-  const [duration, setDuration] = useState(60); // Default 60 mins
-  const [timeLeft, setTimeLeft] = useState(0); // Seconds remaining
-  const timerRef = useRef(null);
-
-  useEffect(() => {
-    if (!socket.connected) socket.connect();
-    socket.emit("request_bus_list");
-
-    socket.on("active_buses_list", (data) => {
-      setAvailableRoutes(data);
-      if (data.length > 0 && !selectedRoute) {
-        setSelectedRoute(data[0]);
-      }
-      setLoading(false);
-    });
-
-    return () => {
-      socket.off("active_buses_list");
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
+  const clearTimer = useCallback(() => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
   }, []);
 
-  // Timer Logic
-  useEffect(() => {
-    if (isTracking && timeLeft > 0) {
-      timerRef.current = setInterval(() => {
-        setTimeLeft((prev) => {
-          if (prev <= 1) {
-            stopTracking();
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-    } else {
-      clearInterval(timerRef.current);
-    }
-    return () => clearInterval(timerRef.current);
-  }, [isTracking, timeLeft]);
+  const stopTracking = useCallback(async () => {
+    const hasStarted = await Location.hasStartedLocationUpdatesAsync(
+      LOCATION_TASK_NAME,
+    );
 
-  const formatTime = (seconds) => {
+    if (hasStarted) {
+      await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
+    }
+
+    socket.emit("stop_bus");
+    await clearCurrentBusRegistration();
+    setIsTracking(false);
+    setTimeLeft(0);
+    clearTimer();
+  }, [clearTimer]);
+
+  useEffect(() => {
+    if (!socket.connected) {
+      socket.connect();
+    }
+
+    socket.emit("request_bus_list");
+
+    const handleBusList = (data: unknown) => {
+      const routes = Array.isArray(data) ? data.filter(isBusRoute) : [];
+
+      setAvailableRoutes(routes);
+      setSelectedRoute((currentRoute) => currentRoute ?? routes[0] ?? null);
+      setLoading(false);
+    };
+
+    socket.on("active_buses_list", handleBusList);
+
+    return () => {
+      socket.off("active_buses_list", handleBusList);
+      clearTimer();
+    };
+  }, [clearTimer]);
+
+  useEffect(() => {
+    if (!isTracking) {
+      clearTimer();
+      return;
+    }
+
+    timerRef.current = setInterval(() => {
+      setTimeLeft((previousTimeLeft) => {
+        if (previousTimeLeft <= 1) {
+          void stopTracking();
+          return 0;
+        }
+
+        return previousTimeLeft - 1;
+      });
+    }, 1000);
+
+    return clearTimer;
+  }, [clearTimer, isTracking, stopTracking]);
+
+  const formatTime = (seconds: number) => {
     const h = Math.floor(seconds / 3600);
     const m = Math.floor((seconds % 3600) / 60);
     const s = seconds % 60;
-    return `${h > 0 ? h + "h " : ""}${m}m ${s}s`;
+
+    return `${h > 0 ? `${h}h ` : ""}${m}m ${s}s`;
   };
 
   const startTracking = async () => {
-    if (!selectedRoute) return Alert.alert("Error", "No route selected");
-
-    const { status: foreStatus } =
-      await Location.requestForegroundPermissionsAsync();
-    const { status: backStatus } =
-      await Location.requestBackgroundPermissionsAsync();
-
-    if (foreStatus !== "granted" || backStatus !== "granted") {
-      Alert.alert("Permission Denied", "Background location is required!");
+    if (!selectedRoute) {
+      Alert.alert("Error", "No route selected.");
       return;
     }
+
+    const { status: foregroundStatus } =
+      await Location.requestForegroundPermissionsAsync();
+
+    if (foregroundStatus !== "granted") {
+      Alert.alert(
+        "Permission required",
+        "Location access is required before the bus can broadcast.",
+      );
+      return;
+    }
+
+    const { status: backgroundStatus } =
+      await Location.requestBackgroundPermissionsAsync();
+
+    if (backgroundStatus !== "granted") {
+      Alert.alert(
+        "Background permission required",
+        "Background location is required so commuters can see the bus when this app is minimized.",
+      );
+      return;
+    }
+
+    await setCurrentBusRegistration(selectedRoute);
 
     const registerBus = () => {
       socket.emit("register_bus", {
@@ -86,8 +139,12 @@ export default function HomeScreen() {
       });
     };
 
-    if (socket.connected) registerBus();
-    else socket.once("connect", registerBus);
+    if (socket.connected) {
+      registerBus();
+    } else {
+      socket.once("connect", registerBus);
+      socket.connect();
+    }
 
     await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
       accuracy: Location.Accuracy.High,
@@ -95,7 +152,7 @@ export default function HomeScreen() {
       distanceInterval: 10,
       foregroundService: {
         notificationTitle: `GovBus ${selectedRoute.routeId}: Active`,
-        notificationBody: `Time Left: ${formatTime(duration * 60)}`,
+        notificationBody: `Broadcasting for ${formatTime(duration * 60)}`,
         notificationColor: "#2563eb",
       },
     });
@@ -104,18 +161,8 @@ export default function HomeScreen() {
     setIsTracking(true);
   };
 
-  const stopTracking = async () => {
-    await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
-    socket.emit("stop_bus");
-    setIsTracking(false);
-    setTimeLeft(0);
-    clearInterval(timerRef.current);
-  };
-
   return (
     <View style={styles.container}>
-      {/* 🚌 Bus Shortcut and dot removed from here */}
-
       <Text style={styles.title}>GOVBUS LIVE</Text>
 
       <View style={styles.card}>
@@ -128,15 +175,18 @@ export default function HomeScreen() {
             <Picker
               enabled={!isTracking}
               selectedValue={selectedRoute?.routeId}
-              onValueChange={(val) =>
-                setSelectedRoute(availableRoutes.find((r) => r.routeId === val))
-              }
+              onValueChange={(routeId: string) => {
+                const nextRoute =
+                  availableRoutes.find((route) => route.routeId === routeId) ??
+                  null;
+                setSelectedRoute(nextRoute);
+              }}
             >
-              {availableRoutes.map((r) => (
+              {availableRoutes.map((route) => (
                 <Picker.Item
-                  key={r.routeId}
-                  label={`${r.routeId} - ${r.label}`}
-                  value={r.routeId}
+                  key={route.routeId}
+                  label={`${route.routeId} - ${route.label}`}
+                  value={route.routeId}
                 />
               ))}
             </Picker>
@@ -148,18 +198,21 @@ export default function HomeScreen() {
           <Picker
             enabled={!isTracking}
             selectedValue={duration}
-            onValueChange={(itemValue) => setDuration(itemValue)}
+            onValueChange={(minutes: number) => setDuration(minutes)}
           >
-            <Picker.Item label="5 Minutes" value={5} />
-            <Picker.Item label="1 Hour" value={60} />
-            <Picker.Item label="1.5 Hours" value={90} />
-            <Picker.Item label="2 Hours" value={120} />
+            {DURATIONS_IN_MINUTES.map((minutes) => (
+              <Picker.Item
+                key={minutes}
+                label={minutes === 5 ? "5 Minutes" : `${minutes / 60} Hours`}
+                value={minutes}
+              />
+            ))}
           </Picker>
         </View>
 
         {isTracking && (
           <View style={styles.timerDisplay}>
-            <Text style={styles.timerLabel}>AUTO-STOP IN:</Text>
+            <Text style={styles.timerLabel}>AUTO-STOP IN</Text>
             <Text style={styles.timerText}>{formatTime(timeLeft)}</Text>
           </View>
         )}
@@ -197,7 +250,7 @@ const styles = StyleSheet.create({
   card: {
     backgroundColor: "#fff",
     padding: 25,
-    borderRadius: 30,
+    borderRadius: 24,
     elevation: 5,
   },
   label: {

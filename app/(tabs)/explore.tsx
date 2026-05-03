@@ -1,5 +1,6 @@
+import { BusLocation, isBusLocation } from "@/types/govbus";
 import { useLocalSearchParams } from "expo-router";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -9,111 +10,148 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import MapView, { Marker, PROVIDER_GOOGLE } from "react-native-maps";
+import MapView, { Marker } from "react-native-maps";
+
 import socket from "../utils/socket";
 
+const DEFAULT_ROUTE = "101";
+const SEARCH_TIMEOUT_MS = 3000;
+
 export default function ExploreScreen() {
-  const { selectedRoute } = useLocalSearchParams();
-  const [busLocation, setBusLocation] = useState(null);
-  const [isConnected, setIsConnected] = useState(false);
-  const [inputRoute, setInputRoute] = useState("101");
-  const [activeRoute, setActiveRoute] = useState(null);
+  const { selectedRoute } = useLocalSearchParams<{ selectedRoute?: string }>();
+  const [busLocation, setBusLocation] = useState<BusLocation | null>(null);
+  const [isConnected, setIsConnected] = useState(socket.connected);
+  const [inputRoute, setInputRoute] = useState(DEFAULT_ROUTE);
+  const [activeRoute, setActiveRoute] = useState<string | null>(null);
   const [isSearching, setIsSearching] = useState(false);
 
-  const mapRef = useRef(null);
-  const timerRef = useRef(null);
+  const mapRef = useRef<MapView | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeRouteRef = useRef<string | null>(null);
   const hasSnapped = useRef(false);
 
-  useEffect(() => {
-    if (selectedRoute) {
-      setInputRoute(selectedRoute as string);
-      setTimeout(() => handleShowBus(), 500);
+  const clearSearchTimer = useCallback(() => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
     }
-  }, [selectedRoute]);
+  }, []);
 
-  useEffect(() => {
-    socket.connect();
-    socket.on("connect", () => setIsConnected(true));
+  const handleShowBus = useCallback(
+    (routeOverride?: string) => {
+      const routeId = (routeOverride ?? inputRoute).trim();
 
-    socket.on("bus_moved", (data) => {
-      // ⚡ SAFETY CHECK 1: Ensure incoming data has valid coordinates
-      if (data && data.routeId === activeRoute && data.lat && data.lng) {
-        if (timerRef.current) {
-          clearTimeout(timerRef.current);
-          timerRef.current = null;
-        }
-        setIsSearching(false);
-        setBusLocation(data);
+      if (!routeId) {
+        Alert.alert("Error", "Enter Route ID.");
+        return;
+      }
 
-        if (!hasSnapped.current) {
+      clearSearchTimer();
+      hasSnapped.current = false;
+      activeRouteRef.current = routeId;
+      setBusLocation(null);
+      setActiveRoute(routeId);
+      setIsSearching(true);
+
+      socket.emit("join_route", routeId);
+
+      timerRef.current = setTimeout(() => {
+        setBusLocation((currentLocation) => {
+          if (!currentLocation) {
+            Alert.alert("Bus Not Found", `Route ${routeId} is not active.`);
+            setIsSearching(false);
+            return null;
+          }
+
           mapRef.current?.animateToRegion(
             {
-              latitude: data.lat,
-              longitude: data.lng,
+              latitude: currentLocation.lat,
+              longitude: currentLocation.lng,
               latitudeDelta: 0.05,
               longitudeDelta: 0.05,
             },
             1000,
           );
-          hasSnapped.current = true;
-        }
-      }
-    });
 
-    socket.on("route_not_active", (badRouteId) => {
-      if (badRouteId === activeRoute) {
-        if (timerRef.current) clearTimeout(timerRef.current);
-        setIsSearching(false);
-        setBusLocation(null);
-        Alert.alert("Bus Not Found", `Route ${badRouteId} is not active.`);
-      }
-    });
+          return currentLocation;
+        });
+      }, SEARCH_TIMEOUT_MS);
+    },
+    [clearSearchTimer, inputRoute],
+  );
 
-    return () => {
-      socket.off("bus_moved");
-      socket.off("route_not_active");
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
+  useEffect(() => {
+    activeRouteRef.current = activeRoute;
   }, [activeRoute]);
 
-  const handleShowBus = () => {
-    if (!inputRoute.trim()) return Alert.alert("Error", "Enter Route ID");
-    if (timerRef.current) clearTimeout(timerRef.current);
+  useEffect(() => {
+    if (!socket.connected) {
+      socket.connect();
+    }
 
-    hasSnapped.current = false;
-    setBusLocation(null);
-    setActiveRoute(inputRoute);
-    setIsSearching(true);
+    const handleConnect = () => setIsConnected(true);
+    const handleDisconnect = () => setIsConnected(false);
+    const handleBusMoved = (data: unknown) => {
+      if (!isBusLocation(data) || data.routeId !== activeRouteRef.current) {
+        return;
+      }
 
-    socket.emit("join_route", inputRoute);
+      clearSearchTimer();
+      setIsSearching(false);
+      setBusLocation(data);
 
-    timerRef.current = setTimeout(() => {
-      setBusLocation((current) => {
-        // ⚡ SAFETY CHECK 2: Ensure data exists before trying to animate map
-        if (!current || !current.lat || !current.lng) {
-          Alert.alert("Bus Not Found", `Route ${inputRoute} is not active.`);
-          setIsSearching(false);
-          return null;
-        } else {
-          mapRef.current?.animateToRegion(
-            {
-              latitude: current.lat,
-              longitude: current.lng,
-              latitudeDelta: 0.05,
-              longitudeDelta: 0.05,
-            },
-            1000,
-          );
-        }
-        return current;
-      });
-    }, 3000);
-  };
+      if (!hasSnapped.current) {
+        mapRef.current?.animateToRegion(
+          {
+            latitude: data.lat,
+            longitude: data.lng,
+            latitudeDelta: 0.05,
+            longitudeDelta: 0.05,
+          },
+          1000,
+        );
+        hasSnapped.current = true;
+      }
+    };
+
+    const handleRouteNotActive = (badRouteId: unknown) => {
+      if (badRouteId !== activeRouteRef.current) {
+        return;
+      }
+
+      clearSearchTimer();
+      setIsSearching(false);
+      setBusLocation(null);
+      Alert.alert("Bus Not Found", `Route ${badRouteId} is not active.`);
+    };
+
+    socket.on("connect", handleConnect);
+    socket.on("disconnect", handleDisconnect);
+    socket.on("bus_moved", handleBusMoved);
+    socket.on("route_not_active", handleRouteNotActive);
+
+    return () => {
+      socket.off("connect", handleConnect);
+      socket.off("disconnect", handleDisconnect);
+      socket.off("bus_moved", handleBusMoved);
+      socket.off("route_not_active", handleRouteNotActive);
+      clearSearchTimer();
+    };
+  }, [clearSearchTimer]);
+
+  useEffect(() => {
+    if (!selectedRoute) {
+      return;
+    }
+
+    setInputRoute(selectedRoute);
+    handleShowBus(selectedRoute);
+  }, [handleShowBus, selectedRoute]);
 
   return (
     <View style={styles.container}>
       <View style={styles.searchHeader}>
-        <View style={{ flex: 1 }}>
+        <View style={styles.searchInputWrap}>
           <Text style={styles.searchLabel}>TARGET ROUTE</Text>
           <TextInput
             style={styles.searchInput}
@@ -123,17 +161,15 @@ export default function ExploreScreen() {
             keyboardType="numeric"
           />
         </View>
-        <TouchableOpacity style={styles.showButton} onPress={handleShowBus}>
+        <TouchableOpacity style={styles.showButton} onPress={() => handleShowBus()}>
           <Text style={styles.showButtonText}>SHOW</Text>
         </TouchableOpacity>
       </View>
 
-      {/* ⚡ SAFETY CHECK 3: Only render MapView if coordinates are valid */}
-      {busLocation && busLocation.lat && busLocation.lng ? (
+      {busLocation ? (
         <MapView
           ref={mapRef}
           style={styles.map}
-          provider={PROVIDER_GOOGLE}
           initialRegion={{
             latitude: busLocation.lat,
             longitude: busLocation.lng,
@@ -146,11 +182,11 @@ export default function ExploreScreen() {
               latitude: busLocation.lat,
               longitude: busLocation.lng,
             }}
-            rotation={busLocation.heading || 0}
-            flat={true}
+            rotation={busLocation.heading ?? 0}
+            flat
             anchor={{ x: 0.5, y: 0.5 }}
           >
-            <Text style={{ fontSize: 25 }}>🚌</Text>
+            <Text style={styles.busMarker}>BUS</Text>
           </Marker>
         </MapView>
       ) : (
@@ -167,13 +203,12 @@ export default function ExploreScreen() {
         </View>
       )}
 
-      {/* ⚡ SAFETY CHECK 4: Ensure UI components don't crash on null properties */}
-      {busLocation && busLocation.routeId && (
+      {busLocation && (
         <View style={styles.statusCard}>
           <View style={styles.routeBadge}>
             <Text style={styles.badgeText}>{busLocation.routeId}</Text>
           </View>
-          <View style={{ flex: 1 }}>
+          <View style={styles.statusInfo}>
             <Text style={styles.cardTitle}>
               {busLocation.label || "Active Route"}
             </Text>
@@ -196,11 +231,12 @@ const styles = StyleSheet.create({
     zIndex: 10,
     backgroundColor: "white",
     padding: 12,
-    borderRadius: 20,
+    borderRadius: 18,
     elevation: 10,
     flexDirection: "row",
     alignItems: "center",
   },
+  searchInputWrap: { flex: 1 },
   searchLabel: { fontSize: 9, fontWeight: "900", color: "#9ca3af" },
   searchInput: { fontSize: 18, fontWeight: "bold", color: "#1f2937" },
   showButton: {
@@ -214,13 +250,23 @@ const styles = StyleSheet.create({
   loadingArea: { flex: 1, justifyContent: "center", alignItems: "center" },
   loadingText: { marginTop: 20, fontWeight: "900", color: "#374151" },
   subText: { color: "#9ca3af", fontSize: 10, marginTop: 5, fontWeight: "bold" },
+  busMarker: {
+    backgroundColor: "#2563eb",
+    borderRadius: 12,
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "900",
+    overflow: "hidden",
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+  },
   statusCard: {
     position: "absolute",
     bottom: 40,
     alignSelf: "center",
     backgroundColor: "#fff",
     padding: 15,
-    borderRadius: 25,
+    borderRadius: 20,
     elevation: 10,
     width: "90%",
     flexDirection: "row",
@@ -233,6 +279,7 @@ const styles = StyleSheet.create({
     marginRight: 15,
   },
   badgeText: { color: "white", fontWeight: "bold", fontSize: 16 },
+  statusInfo: { flex: 1 },
   cardTitle: { fontWeight: "900", fontSize: 14, color: "#1f2937" },
   cardSub: { fontSize: 10, color: "#10b981", fontWeight: "bold" },
 });
