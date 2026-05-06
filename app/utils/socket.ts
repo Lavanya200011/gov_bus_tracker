@@ -7,7 +7,11 @@ const DEFAULT_SOCKET_URL = "https://gov-bus-backend.onrender.com";
 const CURRENT_BUS_STORAGE_KEY = "govbus.currentBus";
 const socketUrl = process.env.EXPO_PUBLIC_SOCKET_URL || DEFAULT_SOCKET_URL;
 
-let currentBus: BusRoute | null = null;
+export type CurrentBusRegistration = BusRoute & {
+  expiresAt?: number;
+};
+
+let currentBus: CurrentBusRegistration | null = null;
 
 const socket = io(socketUrl, {
   transports: ["websocket"],
@@ -15,20 +19,29 @@ const socket = io(socketUrl, {
   autoConnect: false,
 });
 
-function applyBusRegistration(bus: BusRoute | null) {
+function applyBusRegistration(bus: CurrentBusRegistration | null) {
   currentBus = bus;
 
   socket.auth = bus
     ? {
         routeId: bus.routeId,
         label: bus.label,
+        expiresAt: bus.expiresAt,
       }
     : {};
 }
 
-export async function setCurrentBusRegistration(bus: BusRoute) {
-  applyBusRegistration(bus);
-  await AsyncStorage.setItem(CURRENT_BUS_STORAGE_KEY, JSON.stringify(bus));
+export async function setCurrentBusRegistration(
+  bus: BusRoute,
+  expiresAt?: number,
+) {
+  const registration = { ...bus, expiresAt };
+
+  applyBusRegistration(registration);
+  await AsyncStorage.setItem(
+    CURRENT_BUS_STORAGE_KEY,
+    JSON.stringify(registration),
+  );
 }
 
 export async function clearCurrentBusRegistration() {
@@ -38,6 +51,11 @@ export async function clearCurrentBusRegistration() {
 
 export async function getCurrentBusRegistration() {
   if (currentBus) {
+    if (currentBus.expiresAt && currentBus.expiresAt <= Date.now()) {
+      await clearCurrentBusRegistration();
+      return null;
+    }
+
     return currentBus;
   }
 
@@ -55,9 +73,16 @@ export async function getCurrentBusRegistration() {
       return null;
     }
 
-    applyBusRegistration(parsedBus);
+    const registration = parsedBus as CurrentBusRegistration;
 
-    return parsedBus;
+    if (registration.expiresAt && registration.expiresAt <= Date.now()) {
+      await AsyncStorage.removeItem(CURRENT_BUS_STORAGE_KEY);
+      return null;
+    }
+
+    applyBusRegistration(registration);
+
+    return registration;
   } catch {
     await AsyncStorage.removeItem(CURRENT_BUS_STORAGE_KEY);
     return null;
@@ -74,6 +99,7 @@ socket.on("connect", async () => {
   socket.emit("register_bus", {
     routeId: bus.routeId,
     label: bus.label,
+    expiresAt: bus.expiresAt,
   });
 });
 

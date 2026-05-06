@@ -10,12 +10,12 @@ import {
   View,
 } from "react-native";
 
+import { BusRoute, isBusRoute } from "@/types/govbus";
 import { LOCATION_TASK_NAME } from "../services/LocationTask";
 import socket, {
   clearCurrentBusRegistration,
   setCurrentBusRegistration,
 } from "../utils/socket";
-import { BusRoute, isBusRoute } from "@/types/govbus";
 
 const DURATIONS_IN_MINUTES = [5, 60, 90, 120];
 
@@ -26,6 +26,7 @@ export default function HomeScreen() {
   const [loading, setLoading] = useState(true);
   const [duration, setDuration] = useState(60);
   const [timeLeft, setTimeLeft] = useState(0);
+  const [expiresAt, setExpiresAt] = useState<number | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const clearTimer = useCallback(() => {
@@ -36,9 +37,8 @@ export default function HomeScreen() {
   }, []);
 
   const stopTracking = useCallback(async () => {
-    const hasStarted = await Location.hasStartedLocationUpdatesAsync(
-      LOCATION_TASK_NAME,
-    );
+    const hasStarted =
+      await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
 
     if (hasStarted) {
       await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
@@ -48,6 +48,7 @@ export default function HomeScreen() {
     await clearCurrentBusRegistration();
     setIsTracking(false);
     setTimeLeft(0);
+    setExpiresAt(null);
     clearTimer();
   }, [clearTimer]);
 
@@ -75,24 +76,61 @@ export default function HomeScreen() {
   }, [clearTimer]);
 
   useEffect(() => {
-    if (!isTracking) {
+    if (!isTracking || !expiresAt) {
       clearTimer();
       return;
     }
 
-    timerRef.current = setInterval(() => {
-      setTimeLeft((previousTimeLeft) => {
-        if (previousTimeLeft <= 1) {
-          void stopTracking();
-          return 0;
-        }
+    const updateRemainingTime = () => {
+      const nextTimeLeft = Math.max(
+        Math.ceil((expiresAt - Date.now()) / 1000),
+        0,
+      );
 
-        return previousTimeLeft - 1;
-      });
-    }, 1000);
+      setTimeLeft(nextTimeLeft);
+
+      if (nextTimeLeft === 0) {
+        clearTimer();
+      }
+    };
+
+    updateRemainingTime();
+    timerRef.current = setInterval(updateRemainingTime, 1000);
 
     return clearTimer;
-  }, [clearTimer, isTracking, stopTracking]);
+  }, [clearTimer, expiresAt, isTracking]);
+
+  useEffect(() => {
+    const handleBusRegistered = (data: unknown) => {
+      const registeredBus = data as { expiresAt?: unknown };
+      const serverExpiresAt = Number(registeredBus?.expiresAt);
+
+      if (!Number.isFinite(serverExpiresAt)) {
+        return;
+      }
+
+      setExpiresAt(serverExpiresAt);
+      setTimeLeft(
+        Math.max(Math.ceil((serverExpiresAt - Date.now()) / 1000), 0),
+      );
+    };
+
+    const handleBusTimerExpired = () => {
+      void stopTracking();
+      Alert.alert(
+        "Broadcast ended",
+        "Your selected broadcast duration is complete.",
+      );
+    };
+
+    socket.on("bus_registered", handleBusRegistered);
+    socket.on("bus_timer_expired", handleBusTimerExpired);
+
+    return () => {
+      socket.off("bus_registered", handleBusRegistered);
+      socket.off("bus_timer_expired", handleBusTimerExpired);
+    };
+  }, [stopTracking]);
 
   const formatTime = (seconds: number) => {
     const h = Math.floor(seconds / 3600);
@@ -130,12 +168,16 @@ export default function HomeScreen() {
       return;
     }
 
-    await setCurrentBusRegistration(selectedRoute);
+    const selectedExpiresAt = Date.now() + duration * 60 * 1000;
+
+    await setCurrentBusRegistration(selectedRoute, selectedExpiresAt);
 
     const registerBus = () => {
       socket.emit("register_bus", {
         routeId: selectedRoute.routeId,
         label: selectedRoute.label,
+        durationMinutes: duration,
+        expiresAt: selectedExpiresAt,
       });
     };
 
@@ -157,7 +199,10 @@ export default function HomeScreen() {
       },
     });
 
-    setTimeLeft(duration * 60);
+    setExpiresAt(selectedExpiresAt);
+    setTimeLeft(
+      Math.max(Math.ceil((selectedExpiresAt - Date.now()) / 1000), 0),
+    );
     setIsTracking(true);
   };
 

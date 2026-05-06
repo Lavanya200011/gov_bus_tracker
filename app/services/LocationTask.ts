@@ -24,6 +24,19 @@ TaskManager.defineTask<LocationTaskData>(LOCATION_TASK_NAME, async ({ data, erro
   const { latitude, longitude, heading } = location.coords;
   const bus = await getCurrentBusRegistration();
 
+  if (!bus) {
+    const hasStarted = await Location.hasStartedLocationUpdatesAsync(
+      LOCATION_TASK_NAME,
+    );
+
+    if (hasStarted) {
+      await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
+    }
+
+    socket.emit("stop_bus");
+    return;
+  }
+
   if (!socket.connected) {
     socket.connect();
   }
