@@ -6,18 +6,29 @@ import {
   Alert,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
 
 import { BusRoute, isBusRoute } from "@/types/govbus";
-import { LOCATION_TASK_NAME } from "../services/LocationTask";
+import {
+  clearLastSentBusLocation,
+  LOCATION_TASK_NAME,
+} from "../services/LocationTask";
+import type { DriverSession } from "../utils/socket";
 import socket, {
   clearCurrentBusRegistration,
+  getDriverAuthToken,
+  getDriverSession,
+  loginDriver,
+  logoutDriver,
   setCurrentBusRegistration,
 } from "../utils/socket";
 
 const DURATIONS_IN_MINUTES = [5, 60, 90, 120];
+const LOCATION_UPDATE_INTERVAL_MS = 30000;
+const LOCATION_DISTANCE_INTERVAL_METERS = 20;
 
 export default function HomeScreen() {
   const [isTracking, setIsTracking] = useState(false);
@@ -27,6 +38,12 @@ export default function HomeScreen() {
   const [duration, setDuration] = useState(60);
   const [timeLeft, setTimeLeft] = useState(0);
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
+  const [driverSession, setDriverSession] = useState<DriverSession | null>(
+    null,
+  );
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const clearTimer = useCallback(() => {
@@ -45,12 +62,19 @@ export default function HomeScreen() {
     }
 
     socket.emit("stop_bus");
+    await clearLastSentBusLocation();
     await clearCurrentBusRegistration();
     setIsTracking(false);
     setTimeLeft(0);
     setExpiresAt(null);
     clearTimer();
   }, [clearTimer]);
+
+  useEffect(() => {
+    getDriverSession()
+      .then(setDriverSession)
+      .catch(() => setDriverSession(null));
+  }, []);
 
   useEffect(() => {
     if (!socket.connected) {
@@ -61,9 +85,23 @@ export default function HomeScreen() {
 
     const handleBusList = (data: unknown) => {
       const routes = Array.isArray(data) ? data.filter(isBusRoute) : [];
+      const allowedRouteIds = driverSession?.driver.allowedRouteIds ?? [];
+      const driverRoutes =
+        allowedRouteIds.length > 0
+          ? routes.filter((route) => allowedRouteIds.includes(route.routeId))
+          : routes;
 
-      setAvailableRoutes(routes);
-      setSelectedRoute((currentRoute) => currentRoute ?? routes[0] ?? null);
+      setAvailableRoutes(driverRoutes);
+      setSelectedRoute((currentRoute) => {
+        if (
+          currentRoute &&
+          driverRoutes.some((route) => route.routeId === currentRoute.routeId)
+        ) {
+          return currentRoute;
+        }
+
+        return driverRoutes[0] ?? null;
+      });
       setLoading(false);
     };
 
@@ -73,7 +111,7 @@ export default function HomeScreen() {
       socket.off("active_buses_list", handleBusList);
       clearTimer();
     };
-  }, [clearTimer]);
+  }, [clearTimer, driverSession]);
 
   useEffect(() => {
     if (!isTracking || !expiresAt) {
@@ -123,14 +161,31 @@ export default function HomeScreen() {
       );
     };
 
+    const handleAuthError = async (message: unknown) => {
+      if (isTracking) {
+        await stopTracking();
+      }
+
+      await logoutDriver();
+      setDriverSession(null);
+      Alert.alert(
+        "Driver login expired",
+        typeof message === "string" ? message : "Please login again.",
+      );
+    };
+
     socket.on("bus_registered", handleBusRegistered);
     socket.on("bus_timer_expired", handleBusTimerExpired);
+    socket.on("registration_error", handleAuthError);
+    socket.on("location_error", handleAuthError);
 
     return () => {
       socket.off("bus_registered", handleBusRegistered);
       socket.off("bus_timer_expired", handleBusTimerExpired);
+      socket.off("registration_error", handleAuthError);
+      socket.off("location_error", handleAuthError);
     };
-  }, [stopTracking]);
+  }, [isTracking, stopTracking]);
 
   const formatTime = (seconds: number) => {
     const h = Math.floor(seconds / 3600);
@@ -141,6 +196,13 @@ export default function HomeScreen() {
   };
 
   const startTracking = async () => {
+    const driverAuthToken = await getDriverAuthToken();
+
+    if (!driverAuthToken) {
+      Alert.alert("Login required", "Driver login is required to broadcast.");
+      return;
+    }
+
     if (!selectedRoute) {
       Alert.alert("Error", "No route selected.");
       return;
@@ -170,6 +232,7 @@ export default function HomeScreen() {
 
     const selectedExpiresAt = Date.now() + duration * 60 * 1000;
 
+    await clearLastSentBusLocation();
     await setCurrentBusRegistration(selectedRoute, selectedExpiresAt);
 
     const registerBus = () => {
@@ -178,6 +241,7 @@ export default function HomeScreen() {
         label: selectedRoute.label,
         durationMinutes: duration,
         expiresAt: selectedExpiresAt,
+        driverAuthToken,
       });
     };
 
@@ -190,8 +254,8 @@ export default function HomeScreen() {
 
     await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
       accuracy: Location.Accuracy.High,
-      timeInterval: 5000,
-      distanceInterval: 10,
+      timeInterval: LOCATION_UPDATE_INTERVAL_MS,
+      distanceInterval: LOCATION_DISTANCE_INTERVAL_METERS,
       foregroundService: {
         notificationTitle: `GovBus ${selectedRoute.routeId}: Active`,
         notificationBody: `Broadcasting for ${formatTime(duration * 60)}`,
@@ -206,12 +270,90 @@ export default function HomeScreen() {
     setIsTracking(true);
   };
 
+  const handleLogin = async () => {
+    const nextUsername = username.trim();
+
+    if (!nextUsername || !password) {
+      Alert.alert("Login required", "Enter driver username and password.");
+      return;
+    }
+
+    setIsLoggingIn(true);
+
+    try {
+      const session = await loginDriver(nextUsername, password);
+      setDriverSession(session);
+      setPassword("");
+      socket.emit("request_bus_list");
+    } catch (error) {
+      Alert.alert(
+        "Login failed",
+        error instanceof Error ? error.message : "Driver login failed.",
+      );
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    if (isTracking) {
+      await stopTracking();
+    }
+
+    await logoutDriver();
+    setDriverSession(null);
+    setAvailableRoutes([]);
+    setSelectedRoute(null);
+  };
+
+  if (!driverSession) {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.title}>DRIVER LOGIN</Text>
+
+        <View style={styles.card}>
+          <Text style={styles.label}>USERNAME</Text>
+          <TextInput
+            autoCapitalize="none"
+            autoCorrect={false}
+            onChangeText={setUsername}
+            placeholder="driver1"
+            style={styles.input}
+            value={username}
+          />
+
+          <Text style={styles.label}>PASSWORD</Text>
+          <TextInput
+            onChangeText={setPassword}
+            placeholder="password"
+            secureTextEntry
+            style={styles.input}
+            value={password}
+          />
+
+          <TouchableOpacity
+            disabled={isLoggingIn}
+            onPress={handleLogin}
+            style={[styles.mainBtn, styles.startBtn]}
+          >
+            <Text style={styles.mainBtnText}>
+              {isLoggingIn ? "LOGGING IN..." : "LOGIN"}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       <Text style={styles.title}>BUS LIVE</Text>
 
       <View style={styles.card}>
         <Text style={styles.label}>DRIVER CONSOLE</Text>
+        <Text style={styles.driverName}>
+          {driverSession.driver.username.toUpperCase()}
+        </Text>
 
         {loading ? (
           <ActivityIndicator size="small" color="#2563eb" />
@@ -273,6 +415,12 @@ export default function HomeScreen() {
             {isTracking ? "STOP BROADCAST" : "START BROADCAST"}
           </Text>
         </TouchableOpacity>
+
+        {!isTracking && (
+          <TouchableOpacity onPress={handleLogout} style={styles.logoutBtn}>
+            <Text style={styles.logoutText}>LOGOUT</Text>
+          </TouchableOpacity>
+        )}
       </View>
     </View>
   );
@@ -306,6 +454,25 @@ const styles = StyleSheet.create({
     textAlign: "center",
     letterSpacing: 1,
   },
+  driverName: {
+    color: "#1f2937",
+    fontSize: 14,
+    fontWeight: "900",
+    marginBottom: 15,
+    textAlign: "center",
+  },
+  input: {
+    backgroundColor: "#f9fafb",
+    borderColor: "#e5e7eb",
+    borderRadius: 12,
+    borderWidth: 1,
+    color: "#1f2937",
+    fontSize: 16,
+    fontWeight: "600",
+    marginBottom: 15,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
   pickerContainer: {
     backgroundColor: "#f9fafb",
     borderRadius: 12,
@@ -327,4 +494,6 @@ const styles = StyleSheet.create({
   startBtn: { backgroundColor: "rgb(58, 231, 130)" },
   stopBtn: { backgroundColor: "#ef4444" },
   mainBtnText: { color: "#fff", fontWeight: "800" },
+  logoutBtn: { alignItems: "center", marginTop: 14, padding: 10 },
+  logoutText: { color: "#6b7280", fontSize: 12, fontWeight: "900" },
 });
