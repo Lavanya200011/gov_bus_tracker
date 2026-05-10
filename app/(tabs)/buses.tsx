@@ -71,7 +71,7 @@ export default function BusesScreen() {
   const handleSelectBus = (bus: BusRoute) => {
     if (!bus.isLive) {
       Alert.alert(
-        "Offline",
+        "Bus Offline",
         "This bus is not currently broadcasting its location.",
       );
       return;
@@ -100,7 +100,7 @@ export default function BusesScreen() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.header}>SYSTEM ROUTES</Text>
+      <Text style={styles.header}>All ROUTES</Text>
 
       <View style={styles.listContainer}>
         {loading ? (
@@ -207,7 +207,7 @@ const styles = StyleSheet.create({
     margin: 20,
     paddingHorizontal: 15,
     paddingVertical: 12,
-    borderRadius: 18,
+    borderRadius: 14,
     elevation: 10,
   },
   searchInput: { fontSize: 16, fontWeight: "600", color: "#1f2937" },

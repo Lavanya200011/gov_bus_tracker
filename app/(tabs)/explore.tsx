@@ -182,7 +182,7 @@ export default function ExploreScreen() {
     <View style={styles.container}>
       <View style={styles.searchHeader}>
         <View style={styles.searchInputWrap}>
-          <Text style={styles.searchLabel}>TARGET ROUTE</Text>
+          <Text style={styles.searchLabel}>ENTER ROUTE ID</Text>
           <TextInput
             style={styles.searchInput}
             value={inputRoute}
@@ -191,7 +191,10 @@ export default function ExploreScreen() {
             keyboardType="numeric"
           />
         </View>
-        <TouchableOpacity style={styles.showButton} onPress={() => handleShowBus()}>
+        <TouchableOpacity
+          style={styles.showButton}
+          onPress={() => handleShowBus()}
+        >
           <Text style={styles.showButtonText}>SHOW</Text>
         </TouchableOpacity>
       </View>
@@ -308,7 +311,7 @@ const styles = StyleSheet.create({
     zIndex: 10,
     backgroundColor: "white",
     padding: 12,
-    borderRadius: 18,
+    borderRadius: 6,
     elevation: 10,
     flexDirection: "row",
     alignItems: "center",
@@ -317,10 +320,10 @@ const styles = StyleSheet.create({
   searchLabel: { fontSize: 9, fontWeight: "900", color: "#9ca3af" },
   searchInput: { fontSize: 18, fontWeight: "bold", color: "#1f2937" },
   showButton: {
-    backgroundColor: "#2563eb",
+    backgroundColor: "rgb(58, 231, 130)",
     paddingVertical: 10,
     paddingHorizontal: 20,
-    borderRadius: 12,
+    borderRadius: 6,
     marginLeft: 10,
   },
   showButtonText: { color: "white", fontWeight: "900", fontSize: 12 },

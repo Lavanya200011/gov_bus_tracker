@@ -208,7 +208,7 @@ export default function HomeScreen() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>GOVBUS LIVE</Text>
+      <Text style={styles.title}>BUS LIVE</Text>
 
       <View style={styles.card}>
         <Text style={styles.label}>DRIVER CONSOLE</Text>
@@ -295,7 +295,7 @@ const styles = StyleSheet.create({
   card: {
     backgroundColor: "#fff",
     padding: 25,
-    borderRadius: 24,
+    borderRadius: 14,
     elevation: 5,
   },
   label: {
@@ -323,8 +323,8 @@ const styles = StyleSheet.create({
   },
   timerLabel: { fontSize: 10, fontWeight: "bold", color: "#2563eb" },
   timerText: { fontSize: 20, fontWeight: "900", color: "#1e40af" },
-  mainBtn: { padding: 18, borderRadius: 18, alignItems: "center" },
-  startBtn: { backgroundColor: "#2563eb" },
+  mainBtn: { padding: 18, borderRadius: 6, alignItems: "center" },
+  startBtn: { backgroundColor: "rgb(58, 231, 130)" },
   stopBtn: { backgroundColor: "#ef4444" },
   mainBtnText: { color: "#fff", fontWeight: "800" },
 });
